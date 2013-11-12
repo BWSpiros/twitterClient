@@ -24,6 +24,10 @@ class User < ActiveRecord::Base
   has_many :followed_users, through: :outbound_follows, source: :followee
   has_many :followers, through: :inbound_follows, source: :follower
 
+  def self.use_uri(uri)
+    User.parse_twitter_params(JSON.parse(TwitterSession.get(uri.to_s).body))
+  end
+
   def self.fetch_by_screen_name(screenname)
     user_uri = Addressable::URI.new(
       :scheme => "http",
@@ -31,8 +35,7 @@ class User < ActiveRecord::Base
       :path => "1.1/users/show.json",
       :query_values => {screen_name: screenname}
     )
-
-    User.parse_twitter_params(JSON.parse(TwitterSession.get(user_uri.to_s).body))
+    self.use_uri(user_uri)
   end
 
   def self.fetch_by_id(id)
@@ -42,11 +45,7 @@ class User < ActiveRecord::Base
       :path => "1.1/users/show.json",
       :query_values => {user_id: id}
     )
-
-
-    User.parse_twitter_params(JSON.parse(TwitterSession.get(user_uri.to_s).body))
-
-
+    self.use_uri(user_uri)
   end
 
 
@@ -68,12 +67,42 @@ class User < ActiveRecord::Base
     twitter_user_id: params["id_str"],
     screen_name: params["screen_name"]
     )
+    return nil if params["id_str"] == nil || params["screen_name"] == nil
     if User.find_by_twitter_user_id(u.twitter_user_id) == nil
       u.save!
       p "SAVED!"
     end
   end
 
+
+  def self.fetch_followers(user_id)
+    followers_uri = Addressable::URI.new(
+      :scheme => "https",
+      :host => "api.twitter.com",
+      :path => "1.1/followers/ids.json",
+      :query_values => {user_id: user_id, stringify_ids: true}
+    )
+    followers = JSON.parse(TwitterSession.get(followers_uri.to_s).body)['ids']
+    p "GOT THIS FAR"
+    puts followers.size
+    sync_followers(followers, user_id)
+  end
+
+
+  def self.sync_followers(followers, followed_person)
+    followed = User.find_by_twitter_user_id(followed_person)
+    followers.each do |follower|
+      if (!User.find_by_twitter_user_id(follower).nil?) && (followed.followers.include? follower)
+        next
+      end
+      next if Follow.find_by_twitter_follower_id_and_twitter_followee_id(follower, followed_person )
+      f_obj = fetch_by_id(follower)
+      f = Follow.new
+      f.twitter_follower_id = follower
+      f.twitter_followee_id = followed_person
+      f.save
+    end
+  end
 
   def self.sync_statuses(username)
     Status.fetch_statuses_for_user(username)
